@@ -1,86 +1,64 @@
 import requests
-from dotenv import load_dotenv
 import os
+from dotenv import load_dotenv
+import logging
 
-# Load environment variables
 load_dotenv()
+logger = logging.getLogger(__name__)
 
-# API configuration
 API_KEY = os.getenv("OPENWEATHERMAP_API_KEY")
-BASE_URL_WEATHER = "https://api.openweathermap.org/data/2.5/weather"
-BASE_URL_FORECAST = "https://api.openweathermap.org/data/2.5/forecast"
+BASE_URL = "http://api.openweathermap.org/data/2.5"
 
-def fetch_weather(city):
-    """Fetch current weather data for a given city."""
-    params = {
-        "q": city,
-        "appid": API_KEY,
-        "units": "metric"
-    }
+def fetch_weather(city=None, lat=None, lon=None):
     try:
-        response = requests.get(BASE_URL_WEATHER, params=params)
+        if city:
+            url = f"{BASE_URL}/weather?q={city}&appid={API_KEY}&units=metric"
+        else:
+            url = f"{BASE_URL}/weather?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
+        response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        return {
+        weather_data = {
             "city": data["name"],
             "temperature": data["main"]["temp"],
             "feels_like": data["main"]["feels_like"],
             "pressure": data["main"]["pressure"],
             "humidity": data["main"]["humidity"],
+            "clouds": data["clouds"]["all"],
+            "rain_1h": data.get("rain", {}).get("1h", 0),
+            "wind_speed": data["wind"]["speed"],
             "description": data["weather"][0]["description"],
             "icon": data["weather"][0]["icon"],
-            "wind_speed": data["wind"]["speed"],
-            "rain_1h": data.get("rain", {}).get("1h", 0),
-            "clouds": data["clouds"]["all"],
             "sunrise": data["sys"]["sunrise"],
             "sunset": data["sys"]["sunset"],
             "timestamp": data["dt"]
         }
-    except requests.RequestException as e:
-        print(f"Error fetching weather: {e}")
+        logger.debug(f"Fetched current weather: {weather_data}")
+        return weather_data
+    except Exception as e:
+        logger.error(f"Error fetching current weather: {e}")
         return None
 
-def fetch_forecast(city, hours=48):
-    """Fetch 48-hour weather forecast for a given city."""
-    params = {
-        "q": city,
-        "appid": API_KEY,
-        "units": "metric"
-    }
+def fetch_forecast(city=None, lat=None, lon=None):
     try:
-        response = requests.get(BASE_URL_FORECAST, params=params)
+        if city:
+            url = f"{BASE_URL}/forecast?q={city}&appid={API_KEY}&units=metric"
+        else:
+            url = f"{BASE_URL}/forecast?lat={lat}&lon={lon}&appid={API_KEY}&units=metric"
+        response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        # Filter for 48 hours (16 intervals of 3 hours)
-        forecast_list = data["list"][:16]
-        forecasts = []
-        for item in forecast_list:
-            forecasts.append({
+        forecast_data = []
+        for item in data["list"][:24]:  # 24 steps = 72 hours (3-hour intervals)
+            forecast_data.append({
                 "timestamp": item["dt"],
                 "temperature": item["main"]["temp"],
-                "feels_like": item["main"]["feels_like"],
                 "pressure": item["main"]["pressure"],
-                "humidity": item["main"]["humidity"],
-                "description": item["weather"][0]["description"],
-                "icon": item["weather"][0]["icon"],
-                "wind_speed": item["wind"]["speed"],
-                "rain_3h": item.get("rain", {}).get("3h", 0),
-                "clouds": item["clouds"]["all"]
+                "clouds": item["clouds"]["all"],
+                "icon": item["weather"][0]["icon"]
             })
-        return forecasts
-    except requests.RequestException as e:
-        print(f"Error fetching forecast: {e}")
+        logger.debug(f"Fetched 72-hour forecast with {len(forecast_data)} entries")
+        return forecast_data
+    except Exception as e:
+        logger.error(f"Error fetching forecast: {e}")
         return None
-
-if __name__ == "__main__":
-    CITY = "London"  # Change to your preferred city
-    # Test current weather
-    weather_data = fetch_weather(CITY)
-    if weather_data:
-        print("Current Weather:", weather_data)
-    # Test forecast
-    forecast_data = fetch_forecast(CITY)
-    if forecast_data:
-        print("48-Hour Forecast:")
-        for forecast in forecast_data:
-            print(forecast)
