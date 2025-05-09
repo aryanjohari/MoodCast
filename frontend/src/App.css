@@ -1,0 +1,33 @@
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+.weather, .mood-suggestion, .alerts, .forecast {
+  margin: 20px 0;
+  padding: 20px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+.weather-icon {
+  margin: 10px 0;
+}
+.forecast-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.forecast-item {
+  flex: 1 1 200px;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  text-align: center;
+}
+.mood-suggestion {
+  background-color: #e0f7fa;
+}
+.alerts {
+  background-color: #ffebee;
+}

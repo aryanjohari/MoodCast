@@ -10,21 +10,21 @@ TOPIC_ALERTS = "moodcast/alerts"
 
 def publish_weather(weather_data):
     """Publish current weather data to MQTT."""
-    client = mqtt.Client()
+    client = mqtt.Client(client_id="moodcast_weather_publisher", protocol=mqtt.MQTTv311)
     client.connect(BROKER, PORT)
     client.publish(TOPIC_WEATHER, json.dumps(weather_data))
     client.disconnect()
 
 def publish_forecast(forecast_data):
     """Publish 48-hour forecast data to MQTT."""
-    client = mqtt.Client()
+    client = mqtt.Client(client_id="moodcast_forecast_publisher", protocol=mqtt.MQTTv311)
     client.connect(BROKER, PORT)
     client.publish(TOPIC_FORECAST, json.dumps(forecast_data))
     client.disconnect()
 
 def publish_alert(message):
     """Publish an alert (e.g., pressure drop) to MQTT."""
-    client = mqtt.Client()
+    client = mqtt.Client(client_id="moodcast_alert_publisher", protocol=mqtt.MQTTv311)
     client.connect(BROKER, PORT)
     client.publish(TOPIC_ALERTS, json.dumps({"message": message, "timestamp": datetime.utcnow().isoformat()}))
     client.disconnect()
