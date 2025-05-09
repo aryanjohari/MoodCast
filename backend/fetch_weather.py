@@ -31,6 +31,9 @@ def fetch_weather(city):
             "icon": data["weather"][0]["icon"],
             "wind_speed": data["wind"]["speed"],
             "rain_1h": data.get("rain", {}).get("1h", 0),
+            "clouds": data["clouds"]["all"],
+            "sunrise": data["sys"]["sunrise"],
+            "sunset": data["sys"]["sunset"],
             "timestamp": data["dt"]
         }
     except requests.RequestException as e:
@@ -61,7 +64,8 @@ def fetch_forecast(city, hours=48):
                 "description": item["weather"][0]["description"],
                 "icon": item["weather"][0]["icon"],
                 "wind_speed": item["wind"]["speed"],
-                "rain_3h": item.get("rain", {}).get("3h", 0)
+                "rain_3h": item.get("rain", {}).get("3h", 0),
+                "clouds": item["clouds"]["all"]
             })
         return forecasts
     except requests.RequestException as e:

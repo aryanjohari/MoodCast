@@ -1,5 +1,6 @@
 from fetch_weather import fetch_weather, fetch_forecast
 from database import store_weather_data, store_forecast_data
+from mqtt_publisher import publish_weather, publish_forecast, publish_alert
 
 CITY = "London"  # Change to your preferred city
 
@@ -12,7 +13,11 @@ def main():
             location=weather_data["city"],
             device_label="MoodCast"
         )
-        print("Current weather stored.")
+        publish_weather(weather_data)
+        print("Current weather stored and published.")
+        # Check for low pressure alert
+        if weather_data["pressure"] < 1000:
+            publish_alert("Low pressure detected—possible fatigue. Try a calming activity!")
     else:
         print("Failed to store current weather.")
 
@@ -24,7 +29,8 @@ def main():
             location=weather_data["city"] if weather_data else CITY,
             device_label="MoodCast"
         )
-        print("48-hour forecast stored.")
+        publish_forecast(forecast_data)
+        print("48-hour forecast stored and published.")
     else:
         print("Failed to store forecast.")
 
