@@ -19,6 +19,7 @@ function App() {
   const mqttClient = useRef(null);
   const publishTimeout = useRef(null);
   const lastPublished = useRef(null);
+  const isMqttInitialized = useRef(false); // Track MQTT init
 
   // Curated list of cities
   const cities = [
@@ -36,6 +37,11 @@ function App() {
 
   // MQTT Setup
   useEffect(() => {
+    if (isMqttInitialized.current) {
+      console.log("MQTT: Already initialized, skipping");
+      return;
+    }
+
     mqttClient.current = mqtt.connect("ws://localhost:8083", {
       clientId: "moodcast_frontend_" + Math.random().toString(16).slice(3),
       protocolVersion: 4,
@@ -96,6 +102,8 @@ function App() {
       console.log("MQTT: Connection closed");
     });
 
+    isMqttInitialized.current = true;
+
     // Timeout for loading error
     const timeout = setTimeout(() => {
       if (!weather) {
@@ -108,21 +116,25 @@ function App() {
     return () => {
       clearTimeout(timeout);
       if (publishTimeout.current) clearTimeout(publishTimeout.current);
-      if (mqttClient.current) mqttClient.current.end();
+      if (mqttClient.current) {
+        mqttClient.current.end(true, () => {
+          console.log("MQTT: Client disconnected");
+        });
+      }
       if (chartInstance.current) chartInstance.current.destroy();
+      isMqttInitialized.current = false; // Reset for remount
     };
-  }, []);
+  }, []); // Empty dependency array
 
   // Initial geolocation
   useEffect(() => {
     getCurrentLocation();
   }, []);
 
-  // Publish city or coordinates changes with debounce
+  // Publish city changes with debounce
   useEffect(() => {
     if (mqttClient.current && selectedCity.name) {
       console.log("useEffect: selectedCity.name:", selectedCity.name);
-      console.log("useEffect: coordinates:", coordinates);
       if (publishTimeout.current) clearTimeout(publishTimeout.current);
       publishTimeout.current = setTimeout(() => {
         const payload = coordinates
@@ -142,7 +154,7 @@ function App() {
         }
       }, 500); // Debounce by 500ms
     }
-  }, [selectedCity.name, coordinates ? JSON.stringify(coordinates) : null]);
+  }, [selectedCity.name]); // Depend only on selectedCity.name
 
   // Geolocation
   const getCurrentLocation = async () => {
@@ -156,28 +168,38 @@ function App() {
           setCoordinates(newCoords);
           try {
             const response = await axios.get(
-              `https://api.openweathermap.org/geo/1.0/reverse?lat=${latitude}&lon=${longitude}&limit=1&appid=${process.env.REACT_APP_OPENWEATHERMAP_API_KEY}`
+              `https://api.openweathermap.org/geo/1.0/reverse?lat=${latitude}&lon=${longitude}&limit=1&appid=${
+                import.meta.env.VITE_OPENWEATHERMAP_API_KEY
+              }`
             );
             const city = response.data[0]?.name || "Auckland";
             console.log(`Geolocation: Resolved city: ${city}`);
-            setSelectedCity({ name: city });
+            if (city !== selectedCity.name) {
+              setSelectedCity({ name: city }); // Only update if different
+            }
           } catch (error) {
             console.error("Geolocation: API error:", error);
-            setSelectedCity({ name: "Auckland" });
+            if (selectedCity.name !== "Auckland") {
+              setSelectedCity({ name: "Auckland" });
+            }
             setCoordinates(null);
             setError("Failed to resolve location. Using default city.");
           }
         },
         (error) => {
           console.error("Geolocation: Denied:", error);
-          setSelectedCity({ name: "Auckland" });
+          if (selectedCity.name !== "Auckland") {
+            setSelectedCity({ name: "Auckland" });
+          }
           setCoordinates(null);
           setError("Geolocation denied. Using default city.");
         }
       );
     } else {
       console.warn("Geolocation: Not supported");
-      setSelectedCity({ name: "Auckland" });
+      if (selectedCity.name !== "Auckland") {
+        setSelectedCity({ name: "Auckland" });
+      }
       setCoordinates(null);
       setError("Geolocation not supported. Using default city.");
     }
