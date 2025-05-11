@@ -12,7 +12,7 @@ except ImportError:
     MQTT_VERSION = None
     logging.warning("paho-mqtt <2.0.0 detected, using deprecated Callback API version 1")
 
-# Setup logging
+# Setup logging (switch to INFO after debugging)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
 
@@ -22,16 +22,30 @@ MQTT_KEEPALIVE = 60
 CITIES = ["auckland", "tokyo", "london", "new_york", "sydney", "paris", "singapore", "dubai", "mumbai", "cape_town"]
 
 def preprocess_data(data):
-    """Preprocess sensor data (filter outliers, normalize)."""
+    """Preprocess sensor data (filter outliers, handle missing fields)."""
     try:
+        # Required fields
+        if not all(key in data for key in ["city", "lat", "lon", "temp", "timestamp", "source"]):
+            missing = [key for key in ["city", "lat", "lon", "temp", "timestamp", "source"] if key not in data]
+            logger.error(f"Missing required fields {missing} for {data.get('city', 'unknown')}")
+            return None
+
+        # Validate temperature
         temp = data.get("temp")
-        if temp is not None and (-50 <= temp <= 50):
-            return data
-        else:
+        if temp is None or not (-50 <= temp <= 50):
             logger.warning(f"Invalid temperature {temp} for {data['city']}")
             return None
-    except KeyError as e:
-        logger.error(f"Missing field in data for {data.get('city', 'unknown')}: {e}")
+
+        # Handle optional fields
+        optional_fields = ["humidity", "pressure", "wind_speed", "clouds", "rain"]
+        for field in optional_fields:
+            if field not in data or data[field] is None:
+                logger.debug(f"Missing {field} for {data['city']}, setting to None")
+                data[field] = None
+
+        return data
+    except Exception as e:
+        logger.error(f"Error preprocessing data for {data.get('city', 'unknown')}: {e}")
         return None
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
