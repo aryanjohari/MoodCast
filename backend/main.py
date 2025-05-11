@@ -1,106 +1,88 @@
 import paho.mqtt.client as mqtt
-from fetch_weather import fetch_weather, fetch_forecast
-from database import store_weather_data, store_forecast_data
-from mqtt_publisher import publish_weather, publish_forecast, publish_alert
-import time
-import logging
 import json
-import threading
+import logging
+from datetime import datetime
+from database import store_sensor_data, compute_mood_score
 
-logging.basicConfig(level=logging.DEBUG)
+# Try to import CallbackAPIVersion, fallback to version 1 API
+try:
+    from paho.mqtt import CallbackAPIVersion
+    MQTT_VERSION = CallbackAPIVersion.VERSION2
+except ImportError:
+    MQTT_VERSION = None
+    logging.warning("paho-mqtt <2.0.0 detected, using deprecated Callback API version 1")
+
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
 logger = logging.getLogger(__name__)
 
-BROKER = "localhost"
-PORT = 1883
-CITY_TOPIC = "moodcast/city"
-DEFAULT_CITY = "Auckland"
-current_city = DEFAULT_CITY
-current_coords = None
-last_fetch = 0
-FETCH_INTERVAL = 300  # 5 minutes
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
+CITIES = ["auckland", "tokyo", "london", "new_york", "sydney", "paris", "singapore", "dubai", "mumbai", "cape_town"]
 
-def fetch_and_publish(city, coords):
-    global last_fetch
+def preprocess_data(data):
+    """Preprocess sensor data (filter outliers, normalize)."""
     try:
-        logger.debug(f"Fetching weather for {city}, coords: {coords}")
-        weather_data = fetch_weather(
-            city=city if not coords else None,
-            lat=coords['lat'] if coords else None,
-            lon=coords['lon'] if coords else None
-        )
-        if weather_data:
-            store_weather_data(weather_data, location=weather_data["city"], device_label="MoodCast")
-            logger.debug(f"Attempting to publish weather for {weather_data['city']}")
-            publish_weather(weather_data)
-            logger.info(f"Current weather for {weather_data['city']} stored and published.")
-            if weather_data["pressure"] < 1000:
-                logger.debug("Low pressure detected, publishing alert")
-                publish_alert("Low pressure detected—possible fatigue. Try a calming activity!")
+        temp = data.get("temp")
+        if temp is not None and (-50 <= temp <= 50):
+            return data
         else:
-            logger.error(f"Failed to fetch current weather for {city}.")
+            logger.warning(f"Invalid temperature {temp} for {data['city']}")
+            return None
+    except KeyError as e:
+        logger.error(f"Missing field in data for {data.get('city', 'unknown')}: {e}")
+        return None
 
-        forecast_data = fetch_forecast(
-            city=city if not coords else None,
-            lat=coords['lat'] if coords else None,
-            lon=coords['lon'] if coords else None
-        )
-        if forecast_data:
-            store_forecast_data(forecast_data, location=weather_data["city"] if weather_data else city, device_label="MoodCast")
-            logger.debug(f"Attempting to publish forecast for {weather_data['city'] if weather_data else city}")
-            publish_forecast(forecast_data)
-            logger.info(f"72-hour forecast for {weather_data['city'] if weather_data else city} stored and published.")
-        else:
-            logger.error(f"Failed to fetch forecast for {city}.")
-        last_fetch = time.time()
-    except Exception as e:
-        logger.error(f"Error in fetch_and_publish: {e}")
-
-def on_connect(client, userdata, flags, rc):
-    logger.debug(f"Connected to MQTT broker with code {rc}")
-    client.subscribe(CITY_TOPIC)
-    # Initial fetch on connect
-    fetch_and_publish(current_city, current_coords)
+def on_connect(client, userdata, flags, reason_code, properties=None):
+    """Callback for MQTT connection."""
+    if reason_code == 0:
+        logger.debug(f"Connected to MQTT broker with code {reason_code}")
+        for city in CITIES:
+            topic = f"moodcast/sensor/{city}"
+            client.subscribe(topic, qos=1)
+            logger.debug(f"Subscribed to {topic}")
+        client.subscribe("moodcast/city", qos=1)
+        logger.debug("Subscribed to moodcast/city")
+    else:
+        logger.error(f"Failed to connect to MQTT broker with code {reason_code}")
 
 def on_message(client, userdata, msg):
-    global current_city, current_coords
+    """Handle incoming MQTT messages."""
     try:
         payload = json.loads(msg.payload.decode())
-        if 'city' in payload:
-            current_city = payload['city']
-            current_coords = None
-            logger.debug(f"Received new city: {current_city}")
-            fetch_and_publish(current_city, current_coords)
-        elif 'lat' in payload and 'lon' in payload:
-            current_city = payload.get('city', current_city)
-            current_coords = {'lat': payload['lat'], 'lon': payload['lon']}
-            logger.debug(f"Received coordinates: {current_coords}")
-            fetch_and_publish(current_city, current_coords)
-    except Exception as e:
-        logger.error(f"Error processing city message: {e}")
+        topic = msg.topic
+        logger.debug(f"Received message on {topic}: {payload}")
 
-def periodic_fetch():
-    while True:
-        if time.time() - last_fetch >= FETCH_INTERVAL:
-            fetch_and_publish(current_city, current_coords)
-        time.sleep(60)  # Check every minute to avoid tight loop
+        if topic == "moodcast/city":
+            logger.info(f"Received new city: {payload.get('city')}")
+            # Handle city changes (to be expanded in Phase 2)
+        elif topic.startswith("moodcast/sensor/"):
+            city = payload["city"]
+            logger.info(f"Processing sensor data for {city}")
+            processed_data = preprocess_data(payload)
+            if processed_data:
+                mood_score = compute_mood_score(processed_data)
+                processed_data["mood_score"] = mood_score
+                store_sensor_data(processed_data)
+                logger.info(f"Stored data for {city} with mood_score {mood_score}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in message on {topic}: {e}")
+    except Exception as e:
+        logger.error(f"Error processing message on {topic}: {e}", exc_info=True)
 
 def main():
-    client = mqtt.Client(client_id="moodcast_backend")
+    """Main backend loop."""
+    client_args = {"client_id": "moodcast_backend"}
+    if MQTT_VERSION:
+        client_args["callback_api_version"] = MQTT_VERSION
+    client = mqtt.Client(**client_args)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(BROKER, PORT)
-    client.loop_start()
-
-    # Start periodic fetch in a separate thread
-    threading.Thread(target=periodic_fetch, daemon=True).start()
-
-    # Keep main thread alive
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        client.loop_stop()
-        client.disconnect()
+    client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
+    logger.debug("Starting MQTT loop")
+    client.loop_forever()
 
 if __name__ == "__main__":
+    logger.debug("Starting main.py")
     main()
