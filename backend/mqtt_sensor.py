@@ -4,7 +4,11 @@ import time
 import logging
 from fetch_weather import fetch_current_weather, fetch_historical_weather, CITIES
 
-# Try to import CallbackAPIVersion, fallback to version 1 API
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+logger = logging.getLogger(__name__)
+
+
 try:
     from paho.mqtt import CallbackAPIVersion
     MQTT_VERSION = CallbackAPIVersion.VERSION2
@@ -12,14 +16,11 @@ except ImportError:
     MQTT_VERSION = None
     logging.warning("paho-mqtt <2.0.0 detected, using deprecated Callback API version 1")
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
-logger = logging.getLogger(__name__)
 
 MQTT_BROKER = "localhost"
 MQTT_PORT = 1883
 MQTT_KEEPALIVE = 60
-PREFERRED_SOURCES = {city: None for city in CITIES}  # Track preferred source per city
+PREFERRED_SOURCES = {city: None for city in CITIES}
 
 def on_connect(client, userdata, flags, reason_code, properties=None):
     """Callback for MQTT connection."""
@@ -61,10 +62,7 @@ def publish_sensor_data():
         for city, info in CITIES.items():
             client_id = f"moodcast_sensor_{info['topic']}"
             logger.debug(f"Initializing MQTT client for {city}: {client_id}")
-            client_args = {"client_id": client_id}
-            if MQTT_VERSION:
-                client_args["callback_api_version"] = MQTT_VERSION
-            client = mqtt.Client(**client_args)
+            client = mqtt.Client(client_id=client_id)
             client.on_connect = on_connect
             client.on_message = on_message
             client.on_publish = on_publish
@@ -78,6 +76,7 @@ def publish_sensor_data():
             weather_data = []
             for city, info in CITIES.items():
                 preferred_source = PREFERRED_SOURCES.get(city)
+                time.sleep(1)  # Rate limit: 2 cities/second
                 if preferred_source == "openweathermap":
                     data = fetch_current_weather(city, info["lat"], info["lon"])
                     if data:
@@ -97,7 +96,6 @@ def publish_sensor_data():
                         if data:
                             weather_data.append(data)
                 else:
-                    # Fetch both initially
                     data_current = fetch_current_weather(city, info["lat"], info["lon"])
                     data_historical = fetch_historical_weather(city, info["lat"], info["lon"])
                     if data_current:

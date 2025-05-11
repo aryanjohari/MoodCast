@@ -22,13 +22,14 @@ CITIES = {
 
 def fetch_current_weather(city, lat, lon):
     """Fetch current weather from OpenWeatherMap."""
-    api_key = "your_openweathermap_api_key"  # Replace with your key
+    api_key = "d82ef6867adb72ca0227e9d0d3e9fd7e"  # Replace with your key
     url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
-    for attempt in range(3):
+    for attempt in range(5):
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=15)
             response.raise_for_status()
             data = response.json()
+            logger.debug(f"Successfully fetched current weather for {city}")
             return {
                 "city": city,
                 "lat": lat,
@@ -39,14 +40,15 @@ def fetch_current_weather(city, lat, lon):
                 "wind_speed": data["wind"].get("speed"),
                 "clouds": data["clouds"].get("all"),
                 "rain": data.get("rain", {}).get("1h", 0),
-                "timestamp": datetime.utcnow().isoformat(),  # Use current UTC time
+                "timestamp": datetime.utcnow().isoformat(),
                 "source": "openweathermap"
             }
         except requests.RequestException as e:
-            logger.error(f"Error fetching current weather for {city}: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s
+            logger.error(f"Attempt {attempt + 1} failed for current weather in {city}: {e}")
+            if attempt < 4:
+                time.sleep(2 ** attempt)
             else:
+                logger.warning(f"All retries failed for current weather in {city}")
                 return None
     return None
 
@@ -57,13 +59,14 @@ def fetch_historical_weather(city, lat, lon):
     url = (f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
            f"&hourly=temperature_2m,relative_humidity_2m,pressure_msl,wind_speed_10m,cloud_cover,precipitation"
            f"&start_date={start_date.strftime('%Y-%m-%d')}&end_date={end_date.strftime('%Y-%m-%d')}")
-    for attempt in range(3):
+    for attempt in range(5):
         try:
-            response = requests.get(url, timeout=5)
+            response = requests.get(url, timeout=15)
             response.raise_for_status()
             data = response.json()
+            logger.debug(f"Successfully fetched historical weather for {city}")
             latest = data["hourly"]
-            index = -1  # Latest available hour
+            index = -1
             return {
                 "city": city,
                 "lat": lat,
@@ -74,14 +77,15 @@ def fetch_historical_weather(city, lat, lon):
                 "wind_speed": latest["wind_speed_10m"][index],
                 "clouds": latest["cloud_cover"][index],
                 "rain": latest["precipitation"][index],
-                "timestamp": datetime.utcnow().isoformat(),  # Use current UTC time
+                "timestamp": datetime.utcnow().isoformat(),
                 "source": "openmeteo"
             }
         except requests.RequestException as e:
-            logger.error(f"Error fetching historical weather for {city}: {e}")
-            if attempt < 2:
+            logger.error(f"Attempt {attempt + 1} failed for historical weather in {city}: {e}")
+            if attempt < 4:
                 time.sleep(2 ** attempt)
             else:
+                logger.warning(f"All retries failed for historical weather in {city}")
                 return None
     return None
 
@@ -89,6 +93,7 @@ def fetch_all_weather():
     """Fetch weather data for all cities from both sources."""
     weather_data = []
     for city, info in CITIES.items():
+        time.sleep(0.5)  # Rate limit: 2 cities/second
         current = fetch_current_weather(city, info["lat"], info["lon"])
         historical = fetch_historical_weather(city, info["lat"], info["lon"])
         if current:
