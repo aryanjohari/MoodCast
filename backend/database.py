@@ -1,174 +1,136 @@
 import sqlite3
-from datetime import datetime, timedelta
 import logging
-import json
+from datetime import datetime
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 DB_PATH = "moodcast.db"
-QUALITY_THRESHOLD_COMPLETENESS = 80.0
-QUALITY_THRESHOLD_FRESHNESS = 300
 
 def init_db():
-    """Initialize database with schema and handle migrations."""
-    with sqlite3.connect(DB_PATH) as conn:
+    """Initialize SQLite database with required tables."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-
+        
+        # Sensor data table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS schema_version (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
+            CREATE TABLE IF NOT EXISTS sensor_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                city TEXT,
+                lat REAL,
+                lon REAL,
+                temp REAL,
+                humidity REAL,
+                pressure REAL,
+                wind_speed REAL,
+                clouds REAL,
+                rain REAL,
+                timestamp TEXT,
+                source TEXT,
+                mood_score INTEGER
             )
         """)
+        logger.info("Created/verified sensor_data table")
         
-        cursor.execute("SELECT MAX(version) FROM schema_version")
-        current_version = cursor.fetchone()[0] or 0
-        logger.debug(f"Current schema version: {current_version}")
-
-        if current_version < 1:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS sensor_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    city TEXT NOT NULL,
-                    lat REAL NOT NULL,
-                    lon REAL NOT NULL,
-                    temp REAL,
-                    humidity REAL,
-                    pressure REAL,
-                    wind_speed REAL,
-                    clouds REAL,
-                    rain REAL,
-                    timestamp TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    mood_score REAL
-                )
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_lat_lon ON sensor_data (lat, lon)
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS quality_metrics (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    city TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    completeness REAL,
-                    freshness INTEGER,
-                    error TEXT,
-                    missing_fields TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS mood_predictions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    city TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    predicted_mood_score REAL,
-                    confidence REAL
-                )
-            """)
-            cursor.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                         (1, datetime.utcnow().isoformat()))
-            logger.info("Applied schema version 1")
-
-        if current_version < 2:
-            cursor.execute("PRAGMA table_info(quality_metrics)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if "missing_fields" not in columns:
-                cursor.execute("ALTER TABLE quality_metrics ADD COLUMN missing_fields TEXT")
-                logger.info("Added missing_fields column to quality_metrics")
-            cursor.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                         (2, datetime.utcnow().isoformat()))
-            logger.info("Applied schema version 2")
-
-        if current_version < 3:
-            cursor.execute("PRAGMA table_info(quality_metrics)")
-            columns = [col[1] for col in cursor.fetchall()]
-            if "source" not in columns:
-                cursor.execute("ALTER TABLE quality_metrics ADD COLUMN source TEXT")
-                logger.info("Added source column to quality_metrics")
-            cursor.execute("INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                         (3, datetime.utcnow().isoformat()))
-            logger.info("Applied schema version 3")
-
+        # Quality metrics table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quality_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                city TEXT,
+                completeness REAL,
+                freshness INTEGER,
+                missing_fields TEXT,
+                error TEXT,
+                timestamp TEXT
+            )
+        """)
+        logger.info("Created/verified quality_metrics table")
+        
+        # IoT nodes table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS iot_nodes (
+                city TEXT PRIMARY KEY,
+                pi_id TEXT,
+                sensor_id TEXT,
+                last_seen TEXT
+            )
+        """)
+        logger.info("Created/verified iot_nodes table")
+        
         conn.commit()
-        logger.info("Database initialized")
+        conn.close()
+        logger.info("Database initialized successfully")
+    except sqlite3.Error as e:
+        logger.error(f"Database initialization error: {e}")
+        raise
 
 def compute_mood_score(data):
-    """Compute MoodSync score based on weather data."""
+    """Compute mood score based on weather data (0-100)."""
     try:
-        score = 50
-        if data.get("pressure") and data["pressure"] < 1000:
-            score -= 10
-        if data.get("clouds") and data["clouds"] > 50:
-            score -= 5
-        if data.get("rain") and data["rain"] > 0:
-            score -= 10
-        if data.get("wind_speed") and data["wind_speed"] > 10:
-            score -= 5
-        hour = datetime.fromisoformat(data["timestamp"]).hour
-        if 6 <= hour <= 18:
-            score += 10
-        return max(0, min(100, score))
+        temp = data.get("temp", 20)  # Default 20°C if missing
+        rain = data.get("rain", 0)   # Default 0mm if missing
+        clouds = data.get("clouds", 0)  # Default 0% if missing
+        
+        # Simple heuristic: higher temp, lower rain, and fewer clouds improve mood
+        temp_score = min(max((temp + 50) * 1.5, 0), 100)  # Normalize -50°C to 50°C
+        rain_penalty = min(rain * 5, 50)  # Heavy rain reduces score
+        cloud_penalty = clouds * 0.3  # Cloudiness slightly reduces score
+        
+        mood_score = int(temp_score - rain_penalty - cloud_penalty)
+        mood_score = max(0, min(mood_score, 100))  # Clamp to 0-100
+        
+        return mood_score
     except Exception as e:
         logger.error(f"Error computing mood score: {e}")
-        return None
+        return 50  # Default score on error
 
-def store_sensor_data(data):
-    """Store preprocessed sensor data and quality metrics."""
-    with sqlite3.connect(DB_PATH) as conn:
+def insert_sensor_data(data):
+    """Insert sensor data into database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        try:
-            cursor.execute("""
-                INSERT INTO sensor_data (city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                data["city"], data["lat"], data["lon"], data["temp"], data.get("humidity"),
-                data.get("pressure"), data.get("wind_speed"), data.get("clouds"), data.get("rain"),
-                data["timestamp"], data["source"], data.get("mood_score")
-            ))
-        except sqlite3.Error as e:
-            logger.error(f"Database error storing sensor data for {data['city']}: {e}")
-            raise
-
-        optional_fields = ["temp", "humidity", "pressure", "wind_speed", "clouds", "rain"]
-        present_fields = [key for key in optional_fields if key in data and data[key] is not None]
-        completeness = len(present_fields) / len(optional_fields) * 100
-        missing_fields = [key for key in optional_fields if key not in data or data[key] is None]
-        freshness = (datetime.utcnow() - datetime.fromisoformat(data["timestamp"])).seconds
-
-        error = None
-        if completeness < QUALITY_THRESHOLD_COMPLETENESS:
-            error = f"Low completeness: {completeness}%"
-        if freshness > QUALITY_THRESHOLD_FRESHNESS:
-            error = error + f"; Stale data: {freshness}s" if error else f"Stale data: {freshness}s"
-
-        try:
-            cursor.execute("""
-                INSERT INTO quality_metrics (city, timestamp, completeness, freshness, missing_fields, error, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                data["city"], datetime.utcnow().isoformat(), completeness, freshness,
-                json.dumps(missing_fields), error, data["source"]
-            ))
-        except sqlite3.Error as e:
-            logger.error(f"Database error storing quality metrics for {data['city']}: {e}")
-            raise
-
+        cursor.execute("""
+            INSERT INTO sensor_data (city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data["city"], data["lat"], data["lon"], data["temp"], data["humidity"],
+            data["pressure"], data["wind_speed"], data["clouds"], data["rain"],
+            data["timestamp"], data["source"], data["mood_score"]
+        ))
         conn.commit()
-        logger.info(f"Stored sensor data for {data['city']} with completeness {completeness}%")
+        conn.close()
+        logger.info(f"Inserted sensor data for {data['city']}")
+    except sqlite3.Error as e:
+        logger.error(f"Error inserting sensor data: {e}")
 
-def prune_old_data(days=7):
-    """Remove data older than specified days."""
-    with sqlite3.connect(DB_PATH) as conn:
+def insert_quality_metrics(city, completeness, freshness, missing_fields, error):
+    """Insert quality metrics into database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-        cursor.execute("DELETE FROM sensor_data WHERE timestamp < ?", (cutoff,))
-        cursor.execute("DELETE FROM quality_metrics WHERE timestamp < ?", (cutoff,))
-        cursor.execute("DELETE FROM mood_predictions WHERE timestamp < ?", (cutoff,))
+        cursor.execute("""
+            INSERT INTO quality_metrics (city, completeness, freshness, missing_fields, error, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (city, completeness, freshness, missing_fields, error, datetime.utcnow().isoformat()))
         conn.commit()
-        logger.info(f"Pruned data older than {days} days")
+        conn.close()
+        logger.info(f"Inserted quality metrics for {city}")
+    except sqlite3.Error as e:
+        logger.error(f"Error inserting quality metrics: {e}")
 
-if __name__ == "__main__":
-    init_db()
+def update_iot_node(city, pi_id, sensor_id):
+    """Update or insert IoT node metadata."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO iot_nodes (city, pi_id, sensor_id, last_seen)
+            VALUES (?, ?, ?, ?)
+        """, (city, pi_id, sensor_id, datetime.utcnow().isoformat()))
+        conn.commit()
+        conn.close()
+        logger.info(f"Updated IoT node for {city}")
+    except sqlite3.Error as e:
+        logger.error(f"Error updating IoT node: {e}")

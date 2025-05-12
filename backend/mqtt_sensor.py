@@ -1,130 +1,134 @@
 import paho.mqtt.client as mqtt
+import requests
 import json
 import time
 import logging
-from fetch_weather import fetch_current_weather, fetch_historical_weather, CITIES
+import sys
+from datetime import datetime
+from fetch_weather import fetch_openweathermap, fetch_openmeteo
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', force=True)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# MQTT settings
+BROKER = "localhost"
+PORT = 1883
+QOS = 1
 
-try:
-    from paho.mqtt import CallbackAPIVersion
-    MQTT_VERSION = CallbackAPIVersion.VERSION2
-except ImportError:
-    MQTT_VERSION = None
-    logging.warning("paho-mqtt <2.0.0 detected, using deprecated Callback API version 1")
-
-
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-MQTT_KEEPALIVE = 60
-PREFERRED_SOURCES = {city: None for city in CITIES}
-
-def on_connect(client, userdata, flags, reason_code, properties=None):
-    """Callback for MQTT connection."""
-    if reason_code == 0:
-        logger.debug(f"Connected to MQTT broker with code {reason_code}")
-        for city, info in CITIES.items():
-            source_topic = f"moodcast/source/{info['topic']}"
-            client.subscribe(source_topic, qos=1)
-            logger.debug(f"Subscribed to {source_topic}")
+def on_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        logger.info(f"Connected to MQTT broker for {userdata['city']}")
     else:
-        logger.error(f"Failed to connect to MQTT broker with code {reason_code}")
+        logger.error(f"Failed to connect to MQTT broker for {userdata['city']}, code: {rc}")
+        sys.exit(1)
 
-def on_message(client, userdata, msg):
-    """Handle incoming source selection messages."""
+def on_publish(client, userdata, mid):
+    logger.debug(f"Successfully published message ID {mid} for {userdata['city']}")
+
+def publish_weather(client, city, data, source):
+    topic = f"moodcast/sensor/{city}"
+    payload = json.dumps({
+        "city": city,
+        "lat": data["lat"],
+        "lon": data["lon"],
+        "temp": data.get("temp"),
+        "humidity": data.get("humidity"),
+        "pressure": data.get("pressure"),
+        "wind_speed": data.get("wind_speed"),
+        "clouds": data.get("clouds"),
+        "rain": data.get("rain"),
+        "timestamp": datetime.utcnow().isoformat(),
+        "source": source
+    })
     try:
-        if msg.topic.startswith("moodcast/source/"):
-            payload = json.loads(msg.payload.decode())
-            city = payload["city"]
-            source = payload["source"]
-            if source in ["openweathermap", "openmeteo"]:
-                PREFERRED_SOURCES[city] = source
-                logger.info(f"Updated preferred source for {city}: {source}")
+        result = client.publish(topic, payload, qos=QOS)
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            logger.error(f"Failed to publish weather data for {city}, code: {result.rc}")
+    except Exception as e:
+        logger.error(f"Error publishing weather data for {city}: {e}")
+
+def main():
+    logger.debug("Starting mqtt_sensor.py")
+    
+    if len(sys.argv) != 2:
+        logger.error("Usage: python mqtt_sensor.py <city>")
+        sys.exit(1)
+    
+    city = sys.argv[1]
+    logger.debug(f"Received city argument: {city}")
+    
+    pi_id = f"pi_{city.lower()}"
+    sensor_id = f"sensor_{city.lower()}"
+    
+    # MQTT client setup
+    try:
+        client = mqtt.Client(client_id=sensor_id, userdata={"city": city}, protocol=mqtt.MQTTv5)
+        client.on_connect = on_connect
+        client.on_publish = on_publish
+        logger.debug(f"Attempting to connect to MQTT broker at {BROKER}:{PORT}")
+        client.connect(BROKER, PORT, keepalive=60)
+    except Exception as e:
+        logger.error(f"Failed to initialize or connect MQTT client: {e}")
+        sys.exit(1)
+    
+    # City coordinates
+    cities = {
+        "Auckland": {"lat": -36.8485, "lon": 174.7633},
+        "Tokyo": {"lat": 35.6762, "lon": 139.6503},
+        "London": {"lat": 51.5074, "lon": -0.1278},
+        "New York": {"lat": 40.7128, "lon": -74.0060},
+        "Sydney": {"lat": -33.8688, "lon": 151.2093},
+        "Paris": {"lat": 48.8566, "lon": 2.3522},
+        "Singapore": {"lat": 1.3521, "lon": 103.8198},
+        "Dubai": {"lat": 25.2048, "lon": 55.2708},
+        "Mumbai": {"lat": 19.0760, "lon": 72.8777},
+        "Cape Town": {"lat": -33.9249, "lon": 18.4241}
+    }
+    
+    if city not in cities:
+        logger.error(f"City {city} not supported. Supported cities: {list(cities.keys())}")
+        sys.exit(1)
+    
+    lat, lon = cities[city]["lat"], cities[city]["lon"]
+    logger.debug(f"Using coordinates for {city}: lat={lat}, lon={lon}")
+    
+    try:
+        client.loop_start()
+        logger.debug(f"Started MQTT loop for {city}")
+    except Exception as e:
+        logger.error(f"Failed to start MQTT loop: {e}")
+        sys.exit(1)
+    
+    while True:
+        try:
+            logger.debug(f"Fetching weather data for {city}")
+            # Try OpenWeatherMap
+            data = fetch_openweathermap(lat, lon)
+            source = "openweathermap"
+            if data:
+                publish_weather(client, city, data, source)
             else:
-                logger.warning(f"Invalid source for {city}: {source}")
-    except json.JSONDecodeError as e:
-        logger.error(f"Invalid JSON in message on {msg.topic}: {e}")
-    except Exception as e:
-        logger.error(f"Error processing message on {msg.topic}: {e}")
-
-def on_publish(client, userdata, mid, reason_codes=None, properties=None):
-    """Callback for successful publish."""
-    logger.debug(f"Published message with mid {mid}")
-
-def publish_sensor_data():
-    """Simulate IoT clients publishing sensor data for each city."""
-    logger.info("Starting MQTT sensor simulation")
-    clients = {}
-    try:
-        for city, info in CITIES.items():
-            client_id = f"moodcast_sensor_{info['topic']}"
-            logger.debug(f"Initializing MQTT client for {city}: {client_id}")
-            client = mqtt.Client(client_id=client_id)
-            client.on_connect = on_connect
-            client.on_message = on_message
-            client.on_publish = on_publish
-            client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
-            clients[city] = client
-            client.loop_start()
-            logger.debug(f"Started MQTT loop for {city}")
-
-        while True:
-            logger.debug("Fetching weather data for all cities")
-            weather_data = []
-            for city, info in CITIES.items():
-                preferred_source = PREFERRED_SOURCES.get(city)
-                time.sleep(1)  # Rate limit: 2 cities/second
-                if preferred_source == "openweathermap":
-                    data = fetch_current_weather(city, info["lat"], info["lon"])
-                    if data:
-                        weather_data.append(data)
-                    else:
-                        logger.warning(f"Failed to fetch openweathermap for {city}, falling back")
-                        data = fetch_historical_weather(city, info["lat"], info["lon"])
-                        if data:
-                            weather_data.append(data)
-                elif preferred_source == "openmeteo":
-                    data = fetch_historical_weather(city, info["lat"], info["lon"])
-                    if data:
-                        weather_data.append(data)
-                    else:
-                        logger.warning(f"Failed to fetch openmeteo for {city}, falling back")
-                        data = fetch_current_weather(city, info["lat"], info["lon"])
-                        if data:
-                            weather_data.append(data)
+                # Fallback to Open-Meteo
+                data = fetch_openmeteo(lat, lon)
+                source = "openmeteo"
+                if data:
+                    publish_weather(client, city, data, source)
                 else:
-                    data_current = fetch_current_weather(city, info["lat"], info["lon"])
-                    data_historical = fetch_historical_weather(city, info["lat"], info["lon"])
-                    if data_current:
-                        weather_data.append(data_current)
-                    if data_historical:
-                        weather_data.append(data_historical)
-
-            if not weather_data:
-                logger.warning("No weather data fetched, skipping publish")
-                time.sleep(60)
-                continue
-
-            for data in weather_data:
-                city = data["city"]
-                topic = f"moodcast/sensor/{CITIES[city]['topic']}"
-                payload = json.dumps(data)
-                result = clients[city].publish(topic, payload, qos=1)
-                logger.debug(f"Publishing to {topic}: {payload}")
-                logger.debug(f"Publish result for {city}: {result.rc}")
-            logger.info("Sleeping for 5 minutes")
-            time.sleep(300)
-    except Exception as e:
-        logger.error(f"Error in publish_sensor_data: {e}", exc_info=True)
-    finally:
-        logger.info("Cleaning up MQTT clients")
-        for client in clients.values():
-            client.loop_stop()
-            client.disconnect()
+                    logger.warning(f"No data available for {city}")
+            
+            # Publish source selection as JSON
+            source_payload = json.dumps({"source": source})
+            try:
+                client.publish(f"moodcast/source/{city}", source_payload, qos=QOS)
+                logger.info(f"Published source {source} for {city} to moodcast/source/{city}")
+            except Exception as e:
+                logger.error(f"Error publishing source for {city}: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error fetching/publishing data for {city}: {e}")
+        
+        time.sleep(60)  # Fetch every 60 seconds
 
 if __name__ == "__main__":
-    logger.info("Starting mqtt_sensor.py")
-    publish_sensor_data()
+    main()

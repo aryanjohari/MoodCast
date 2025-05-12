@@ -63,6 +63,18 @@ def get_weather():
         """, (sensor_data['city'], cutoff))
         quality_data = cursor.fetchone()
 
+        # Get IoT node metadata (with error handling)
+        node_data = None
+        try:
+            cursor.execute("""
+                SELECT pi_id, sensor_id
+                FROM iot_nodes
+                WHERE city = ?
+            """, (sensor_data['city'],))
+            node_data = cursor.fetchone()
+        except sqlite3.Error as e:
+            logger.warning(f"Failed to query iot_nodes for {sensor_data['city']}: {e}")
+
         # Parse missing_fields from string to list
         missing_fields = []
         if quality_data and quality_data['missing_fields']:
@@ -88,7 +100,109 @@ def get_weather():
                 "freshness": quality_data['freshness'] if quality_data else None,
                 "missing_fields": missing_fields,
                 "error": quality_data['error'] if quality_data else None
+            },
+            "iot_node": {
+                "pi_id": node_data['pi_id'] if node_data else None,
+                "sensor_id": node_data['sensor_id'] if node_data else None
             }
+        }
+        conn.close()
+        return jsonify(response), 200
+    except sqlite3.Error as e:
+        conn.close()
+        logger.error(f"Database query error: {e}")
+        return jsonify({"error": "Database query failed"}), 500
+
+@app.route('/forecast', methods=['GET'])
+def get_forecast():
+    """Query 72-hour weather forecast by lat/long."""
+    lat = request.args.get('lat', type=float)
+    lon = request.args.get('lon', type=float)
+    if not lat or not lon:
+        return jsonify({"error": "Missing lat or lon parameters"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cutoff = (datetime.utcnow() - timedelta(hours=72)).isoformat()
+        cursor.execute("""
+            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain,
+                   timestamp, source
+            FROM sensor_data
+            WHERE ABS(lat - ?) <= 0.1 AND ABS(lon - ?) <= 0.1
+            AND timestamp >= ?
+            ORDER BY timestamp ASC
+        """, (lat, lon, cutoff))
+        forecast_data = cursor.fetchall()
+
+        if not forecast_data:
+            conn.close()
+            return jsonify({"error": "No forecast data found for given lat/lon"}), 404
+
+        response = [{
+            "city": row['city'],
+            "timestamp": row['timestamp'],
+            "weather": {
+                "temp": row['temp'],
+                "humidity": row['humidity'],
+                "pressure": row['pressure'],
+                "wind_speed": row['wind_speed'],
+                "clouds": row['clouds'],
+                "rain": row['rain']
+            },
+            "source": row['source']
+        } for row in forecast_data]
+        conn.close()
+        return jsonify(response), 200
+    except sqlite3.Error as e:
+        conn.close()
+        logger.error(f"Database query error: {e}")
+        return jsonify({"error": "Database query failed"}), 500
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    """Query IoT node status by city."""
+    city = request.args.get('city')
+    if not city:
+        return jsonify({"error": "Missing city parameter"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cutoff = (datetime.utcnow() - timedelta(seconds=30)).isoformat()
+        cursor.execute("""
+            SELECT freshness
+            FROM quality_metrics
+            WHERE city = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """, (city, cutoff))
+        status_data = cursor.fetchone()
+
+        # Get IoT node metadata (with error handling)
+        node_data = None
+        try:
+            cursor.execute("""
+                SELECT pi_id, sensor_id
+                FROM iot_nodes
+                WHERE city = ?
+            """, (city,))
+            node_data = cursor.fetchone()
+        except sqlite3.Error as e:
+            logger.warning(f"Failed to query iot_nodes for {city}: {e}")
+
+        response = {
+            "city": city,
+            "status": "Online" if status_data and status_data['freshness'] < 300 else "Offline",
+            "freshness": status_data['freshness'] if status_data else None,
+            "pi_id": node_data['pi_id'] if node_data else None,
+            "sensor_id": node_data['sensor_id'] if node_data else None
         }
         conn.close()
         return jsonify(response), 200
