@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import sqlite3
 import logging
 from datetime import datetime, timedelta
@@ -8,6 +9,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 DB_PATH = "moodcast.db"
 
 def get_db_connection():
@@ -61,6 +63,11 @@ def get_weather():
         """, (sensor_data['city'], cutoff))
         quality_data = cursor.fetchone()
 
+        # Parse missing_fields from string to list
+        missing_fields = []
+        if quality_data and quality_data['missing_fields']:
+            missing_fields = quality_data['missing_fields'].split(',') if ',' in quality_data['missing_fields'] else [quality_data['missing_fields']]
+
         response = {
             "city": sensor_data['city'],
             "lat": sensor_data['lat'],
@@ -79,7 +86,7 @@ def get_weather():
             "quality": {
                 "completeness": quality_data['completeness'] if quality_data else None,
                 "freshness": quality_data['freshness'] if quality_data else None,
-                "missing_fields": quality_data['missing_fields'] if quality_data else [],
+                "missing_fields": missing_fields,
                 "error": quality_data['error'] if quality_data else None
             }
         }
