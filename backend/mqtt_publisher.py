@@ -3,10 +3,12 @@ import json
 import logging
 import time
 
+# Setup logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 BROKER = "localhost"
-PORT = 1883  # Adjust to 8083 if Mosquitto uses WSS exclusively
+PORT = 1883
 CLIENT_ID = "moodcast_publisher"
 
 def get_mqtt_client():
@@ -14,10 +16,10 @@ def get_mqtt_client():
     client.connect(BROKER, PORT, keepalive=60)
     return client
 
-def publish_weather(weather_data):
+def publish_weather(city, weather_data):
     try:
         client = get_mqtt_client()
-        topic = "moodcast/weather"
+        topic = f"moodcast/sensor/{city}"
         payload = json.dumps(weather_data)
         result = client.publish(topic, payload, qos=1)
         client.disconnect()
@@ -28,10 +30,10 @@ def publish_weather(weather_data):
     except Exception as e:
         logger.error(f"Error publishing weather: {e}")
 
-def publish_forecast(forecast_data):
+def publish_forecast(city, forecast_data):
     try:
         client = get_mqtt_client()
-        topic = "moodcast/forecast"
+        topic = f"moodcast/forecast/{city}"
         payload = json.dumps(forecast_data)
         result = client.publish(topic, payload, qos=1)
         client.disconnect()
@@ -42,16 +44,16 @@ def publish_forecast(forecast_data):
     except Exception as e:
         logger.error(f"Error publishing forecast: {e}")
 
-def publish_alert(message):
+def publish_quality(city, quality_data):
     try:
         client = get_mqtt_client()
-        topic = "moodcast/alerts"
-        payload = json.dumps({"message": message})
+        topic = f"moodcast/quality/{city}"
+        payload = json.dumps(quality_data)
         result = client.publish(topic, payload, qos=1)
         client.disconnect()
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logger.info(f"Published alert to {topic}: {payload}")
+            logger.info(f"Published quality to {topic}: {payload}")
         else:
-            logger.error(f"Failed to publish alert to {topic}, rc={result.rc}")
+            logger.error(f"Failed to publish quality to {topic}, rc={result.rc}")
     except Exception as e:
-        logger.error(f"Error publishing alert: {e}")
+        logger.error(f"Error publishing quality: {e}")

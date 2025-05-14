@@ -13,7 +13,7 @@
 }
 
 body {
-  font-family:  'Orbitron', sans-serif;
+  font-family: 'Orbitron', sans-serif;
   background: linear-gradient(135deg, #1f2937, #111827);
   color: #e5e7eb;
 }
@@ -22,15 +22,36 @@ body {
   filter: brightness(0.9) contrast(1.2);
 }
 
-.futuristic-map .leaflet-popup-content-wrapper {
+.futuristic-popup .leaflet-popup-content-wrapper {
   background: #1f2937;
   color: #e5e7eb;
   border-radius: 8px;
   box-shadow: 0 0 10px rgba(34, 211, 238, 0.5);
+  padding: 10px;
 }
 
-.futuristic-map .leaflet-popup-tip {
+.futuristic-popup .leaflet-popup-tip {
   background: #1f2937;
+}
+
+.futuristic-modal {
+  background: rgba(31, 41, 55, 0.8);
+  backdrop-filter: blur(8px);
+  border: 1px solid #22d3ee;
+  border-radius: 12px;
+  box-shadow: 0 0 15px rgba(34, 211, 238, 0.3);
+}
+
+.futuristic-tooltip {
+  background: rgba(31, 41, 55, 0.9) !important;
+  color: #e5e7eb !important;
+  border: 1px solid #22d3ee !important;
+  border-radius: 8px !important;
+  box-shadow: 0 0 10px rgba(34, 211, 238, 0.5) !important;
+  max-width: 300px !important;
+  font-size: 12px !important;
+  padding: 10px !important;
+  z-index: 1000 !important;
 }
 
 .container {
@@ -78,18 +99,31 @@ body {
 }
 
 @keyframes glow {
-  0% {
-    box-shadow: 0 0 5px rgba(34, 211, 238, 0.5);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(34, 211, 238, 0.8);
-  }
-  100% {
-    box-shadow: 0 0 5px rgba(34, 211, 238, 0.5);
-  }
+  0% { box-shadow: 0 0 5px rgba(34, 211, 238, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(34, 211, 238, 0.8); }
+  100% { box-shadow: 0 0 5px rgba(34, 211, 238, 0.5); }
 }
 
 select option {
   background: #1f2937;
   color: #e5e7eb;
+}
+
+/* Custom scrollbar for forecast cards */
+.max-h-\[400px\]::-webkit-scrollbar {
+  width: 8px;
+}
+
+.max-h-\[400px\]::-webkit-scrollbar-track {
+  background: #1f2937;
+  border-radius: 4px;
+}
+
+.max-h-\[400px\]::-webkit-scrollbar-thumb {
+  background: #22d3ee;
+  border-radius: 4px;
+}
+
+.max-h-\[400px\]::-webkit-scrollbar-thumb:hover {
+  background: #60a5fa;
 }

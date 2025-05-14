@@ -18,7 +18,7 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sensor_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                city TEXT,
+                city TEXT NOT NULL,
                 lat REAL,
                 lon REAL,
                 temp REAL,
@@ -27,9 +27,9 @@ def init_db():
                 wind_speed REAL,
                 clouds REAL,
                 rain REAL,
-                timestamp TEXT,
-                source TEXT,
-                mood_score INTEGER
+                timestamp TEXT NOT NULL,
+                source TEXT NOT NULL,
+                mood_score REAL
             )
         """)
         logger.info("Created/verified sensor_data table")
@@ -38,12 +38,12 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS quality_metrics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                city TEXT,
+                city TEXT NOT NULL,
                 completeness REAL,
-                freshness INTEGER,
+                freshness REAL,
                 missing_fields TEXT,
                 error TEXT,
-                timestamp TEXT
+                timestamp TEXT NOT NULL
             )
         """)
         logger.info("Created/verified quality_metrics table")
@@ -51,10 +51,13 @@ def init_db():
         # IoT nodes table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS iot_nodes (
-                city TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                city TEXT NOT NULL UNIQUE,
                 pi_id TEXT,
                 sensor_id TEXT,
-                last_seen TEXT
+                last_seen TEXT,
+                lat REAL,
+                lon REAL
             )
         """)
         logger.info("Created/verified iot_nodes table")
@@ -65,26 +68,6 @@ def init_db():
     except sqlite3.Error as e:
         logger.error(f"Database initialization error: {e}")
         raise
-
-def compute_mood_score(data):
-    """Compute mood score based on weather data (0-100)."""
-    try:
-        temp = data.get("temp", 20)  # Default 20°C if missing
-        rain = data.get("rain", 0)   # Default 0mm if missing
-        clouds = data.get("clouds", 0)  # Default 0% if missing
-        
-        # Simple heuristic: higher temp, lower rain, and fewer clouds improve mood
-        temp_score = min(max((temp + 50) * 1.5, 0), 100)  # Normalize -50°C to 50°C
-        rain_penalty = min(rain * 5, 50)  # Heavy rain reduces score
-        cloud_penalty = clouds * 0.3  # Cloudiness slightly reduces score
-        
-        mood_score = int(temp_score - rain_penalty - cloud_penalty)
-        mood_score = max(0, min(mood_score, 100))  # Clamp to 0-100
-        
-        return mood_score
-    except Exception as e:
-        logger.error(f"Error computing mood score: {e}")
-        return 50  # Default score on error
 
 def insert_sensor_data(data):
     """Insert sensor data into database."""
@@ -120,17 +103,21 @@ def insert_quality_metrics(city, completeness, freshness, missing_fields, error)
     except sqlite3.Error as e:
         logger.error(f"Error inserting quality metrics: {e}")
 
-def update_iot_node(city, pi_id, sensor_id):
+def update_iot_node(city, pi_id, sensor_id, lat, lon):
     """Update or insert IoT node metadata."""
     try:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO iot_nodes (city, pi_id, sensor_id, last_seen)
-            VALUES (?, ?, ?, ?)
-        """, (city, pi_id, sensor_id, datetime.utcnow().isoformat()))
+            INSERT OR REPLACE INTO iot_nodes (city, pi_id, sensor_id, last_seen, lat, lon)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (city, pi_id, sensor_id, datetime.utcnow().isoformat(), lat, lon))
         conn.commit()
         conn.close()
         logger.info(f"Updated IoT node for {city}")
     except sqlite3.Error as e:
         logger.error(f"Error updating IoT node: {e}")
+
+
+if __name__ == "__main__":
+    init_db()

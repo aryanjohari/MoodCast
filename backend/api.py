@@ -1,216 +1,278 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import sqlite3
+import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from flask import Flask, jsonify, request
+from flask_cors import CORS
 
 # Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
+CORS(app)
+
 DB_PATH = "moodcast.db"
 
+# City coordinates
+CITY_COORDS = {
+    'Auckland': (-36.8485, 174.7633),
+    'Tokyo': (35.6762, 139.6503),
+    'London': (51.5074, -0.1278),
+    'New York': (40.7128, -74.006),
+    'Sydney': (-33.8688, 151.2093),
+    'Paris': (48.8566, 2.3522),
+    'Singapore': (1.3521, 103.8198),
+    'Dubai': (25.2048, 55.2708),
+    'Mumbai': (19.076, 72.8777),
+    'Cape Town': (-33.9249, 18.4241)
+}
+
 def get_db_connection():
-    """Connect to SQLite database."""
     try:
         conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
         return conn
     except sqlite3.Error as e:
         logger.error(f"Database connection error: {e}")
         return None
 
+def calculate_mood_score(temp, clouds):
+    """Compute mood_score: (100 - clouds) * (temp / 30), clamped 0-100."""
+    try:
+        score = (100 - clouds) * (temp / 30)
+        return min(max(round(score, 1), 0), 100)
+    except (TypeError, ZeroDivisionError):
+        return 50.0
+
 @app.route('/weather', methods=['GET'])
 def get_weather():
-    """Query weather and mood data by lat/long."""
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     if not lat or not lon:
-        return jsonify({"error": "Missing lat or lon parameters"}), 400
+        return jsonify({'error': 'Missing lat or lon'}), 400
 
     conn = get_db_connection()
     if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
+        return jsonify({'error': 'Database error'}), 500
 
     try:
-        # Find nearest data within 0.1 degrees
         cursor = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(hours=1)).isoformat()
+        # Try openweathermap first, then openmeteo, with fuzzy lat/lon matching
         cursor.execute("""
-            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain,
-                   timestamp, source, mood_score
+            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score
             FROM sensor_data
-            WHERE ABS(lat - ?) <= 0.1 AND ABS(lon - ?) <= 0.1
-            AND timestamp >= ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (lat, lon, cutoff))
-        sensor_data = cursor.fetchone()
+            WHERE ABS(lat - ?) <= 0.01 AND ABS(lon - ?) <= 0.01
+            AND source IN ('openweathermap', 'openmeteo')
+            ORDER BY timestamp DESC, source = 'openweathermap' DESC LIMIT 1
+        """, (lat, lon))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': 'No weather data found'}), 404
 
-        if not sensor_data:
-            conn.close()
-            return jsonify({"error": "No recent data found for given lat/lon"}), 404
-
-        # Get quality metrics
         cursor.execute("""
             SELECT completeness, freshness, missing_fields, error
             FROM quality_metrics
-            WHERE city = ? AND timestamp >= ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (sensor_data['city'], cutoff))
-        quality_data = cursor.fetchone()
+            WHERE city = ? ORDER BY timestamp DESC LIMIT 1
+        """, (row[0],))
+        quality_row = cursor.fetchone()
 
-        # Get IoT node metadata (with error handling)
-        node_data = None
-        try:
-            cursor.execute("""
-                SELECT pi_id, sensor_id
-                FROM iot_nodes
-                WHERE city = ?
-            """, (sensor_data['city'],))
-            node_data = cursor.fetchone()
-        except sqlite3.Error as e:
-            logger.warning(f"Failed to query iot_nodes for {sensor_data['city']}: {e}")
-
-        # Parse missing_fields from string to list
-        missing_fields = []
-        if quality_data and quality_data['missing_fields']:
-            missing_fields = quality_data['missing_fields'].split(',') if ',' in quality_data['missing_fields'] else [quality_data['missing_fields']]
+        cursor.execute("""
+            SELECT pi_id, sensor_id
+            FROM iot_nodes
+            WHERE city = ?
+        """, (row[0],))
+        iot_row = cursor.fetchone()
 
         response = {
-            "city": sensor_data['city'],
-            "lat": sensor_data['lat'],
-            "lon": sensor_data['lon'],
-            "weather": {
-                "temp": sensor_data['temp'],
-                "humidity": sensor_data['humidity'],
-                "pressure": sensor_data['pressure'],
-                "wind_speed": sensor_data['wind_speed'],
-                "clouds": sensor_data['clouds'],
-                "rain": sensor_data['rain']
+            'city': row[0],
+            'lat': row[1],
+            'lon': row[2],
+            'weather': {
+                'temp': row[3],
+                'humidity': row[4],
+                'pressure': row[5],
+                'wind_speed': row[6],
+                'clouds': row[7],
+                'rain': row[8]
             },
-            "mood_score": sensor_data['mood_score'],
-            "source": sensor_data['source'],
-            "timestamp": sensor_data['timestamp'],
-            "quality": {
-                "completeness": quality_data['completeness'] if quality_data else None,
-                "freshness": quality_data['freshness'] if quality_data else None,
-                "missing_fields": missing_fields,
-                "error": quality_data['error'] if quality_data else None
+            'timestamp': row[9],
+            'source': row[10],
+            'mood_score': row[11],
+            'quality': {
+                'completeness': quality_row[0] if quality_row else None,
+                'freshness': quality_row[1] if quality_row else None,
+                'missing_fields': quality_row[2].split(',') if quality_row and quality_row[2] else [],
+                'error': quality_row[3] if quality_row else None
             },
-            "iot_node": {
-                "pi_id": node_data['pi_id'] if node_data else None,
-                "sensor_id": node_data['sensor_id'] if node_data else None
+            'iot_node': {
+                'pi_id': iot_row[0] if iot_row else None,
+                'sensor_id': iot_row[1] if iot_row else None
             }
         }
+        return jsonify(response)
+    except Exception as e:
+        logger.error(f"Error fetching weather: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
         conn.close()
-        return jsonify(response), 200
-    except sqlite3.Error as e:
-        conn.close()
-        logger.error(f"Database query error: {e}")
-        return jsonify({"error": "Database query failed"}), 500
 
 @app.route('/forecast', methods=['GET'])
 def get_forecast():
-    """Query 72-hour weather forecast by lat/long."""
     lat = request.args.get('lat', type=float)
     lon = request.args.get('lon', type=float)
     if not lat or not lon:
-        return jsonify({"error": "Missing lat or lon parameters"}), 400
+        return jsonify({'error': 'Missing lat or lon'}), 400
 
     conn = get_db_connection()
     if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
+        return jsonify({'error': 'Database error'}), 500
 
     try:
         cursor = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(hours=72)).isoformat()
         cursor.execute("""
-            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain,
-                   timestamp, source
+            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score
             FROM sensor_data
-            WHERE ABS(lat - ?) <= 0.1 AND ABS(lon - ?) <= 0.1
-            AND timestamp >= ?
+            WHERE ABS(lat - ?) <= 0.01 AND ABS(lon - ?) <= 0.01 AND source = 'openweathermap_forecast'
             ORDER BY timestamp ASC
-        """, (lat, lon, cutoff))
-        forecast_data = cursor.fetchall()
+        """, (lat, lon))
+        api_rows = cursor.fetchall()
 
-        if not forecast_data:
-            conn.close()
-            return jsonify({"error": "No forecast data found for given lat/lon"}), 404
+        cursor.execute("""
+            SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score
+            FROM sensor_data
+            WHERE ABS(lat - ?) <= 0.01 AND ABS(lon - ?) <= 0.01 AND source = 'model_prediction'
+            ORDER BY timestamp ASC
+        """, (lat, lon))
+        model_rows = cursor.fetchall()
 
-        response = [{
-            "city": row['city'],
-            "timestamp": row['timestamp'],
-            "weather": {
-                "temp": row['temp'],
-                "humidity": row['humidity'],
-                "pressure": row['pressure'],
-                "wind_speed": row['wind_speed'],
-                "clouds": row['clouds'],
-                "rain": row['rain']
+        api_forecasts = [{
+            'city': row[0],
+            'lat': row[1],
+            'lon': row[2],
+            'weather': {
+                'temp': row[3],
+                'humidity': row[4],
+                'pressure': row[5],
+                'wind_speed': row[6],
+                'clouds': row[7],
+                'rain': row[8]
             },
-            "source": row['source']
-        } for row in forecast_data]
+            'timestamp': row[9],
+            'source': row[10],
+            'mood_score': row[11]
+        } for row in api_rows]
+
+        model_forecasts = [{
+            'city': row[0],
+            'lat': row[1],
+            'lon': row[2],
+            'weather': {
+                'temp': row[3],
+                'humidity': row[4],
+                'pressure': row[5],
+                'wind_speed': row[6],
+                'clouds': row[7],
+                'rain': row[8]
+            },
+            'timestamp': row[9],
+            'source': row[10],
+            'mood_score': row[11]
+        } for row in model_rows]
+
+        return jsonify({'api': api_forecasts, 'model': model_forecasts})
+    except Exception as e:
+        logger.error(f"Error fetching forecast: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
         conn.close()
-        return jsonify(response), 200
-    except sqlite3.Error as e:
-        conn.close()
-        logger.error(f"Database query error: {e}")
-        return jsonify({"error": "Database query failed"}), 500
 
 @app.route('/status', methods=['GET'])
 def get_status():
-    """Query IoT node status by city."""
     city = request.args.get('city')
     if not city:
-        return jsonify({"error": "Missing city parameter"}), 400
+        return jsonify({'error': 'Missing city parameter'}), 400
 
     conn = get_db_connection()
     if not conn:
-        return jsonify({"error": "Database connection failed"}), 500
+        return jsonify({'error': 'Database error'}), 500
 
     try:
         cursor = conn.cursor()
-        cutoff = (datetime.utcnow() - timedelta(seconds=30)).isoformat()
         cursor.execute("""
-            SELECT freshness
-            FROM quality_metrics
-            WHERE city = ? AND timestamp >= ?
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """, (city, cutoff))
-        status_data = cursor.fetchone()
+            SELECT pi_id, sensor_id, last_seen, lat, lon
+            FROM iot_nodes
+            WHERE city = ?
+        """, (city,))
+        node_row = cursor.fetchone()
+        if not node_row:
+            return jsonify({'error': 'No IoT node found for city'}), 404
 
-        # Get IoT node metadata (with error handling)
-        node_data = None
-        try:
-            cursor.execute("""
-                SELECT pi_id, sensor_id
-                FROM iot_nodes
-                WHERE city = ?
-            """, (city,))
-            node_data = cursor.fetchone()
-        except sqlite3.Error as e:
-            logger.warning(f"Failed to query iot_nodes for {city}: {e}")
+        last_seen = None
+        if node_row[2]:
+            try:
+                last_seen = datetime.strptime(node_row[2], '%Y-%m-%dT%H:%M:%S.%f%z')
+            except ValueError as e:
+                logger.error(f"Failed to parse last_seen timestamp '{node_row[2]}': {e}")
+                return jsonify({'error': 'Invalid timestamp format'}), 500
+
+        status = 'Online' if last_seen and (datetime.now(timezone.utc) - last_seen).total_seconds() < 300 else 'Offline'
+        freshness = (datetime.now(timezone.utc) - last_seen).total_seconds() if last_seen else None
 
         response = {
-            "city": city,
-            "status": "Online" if status_data and status_data['freshness'] < 300 else "Offline",
-            "freshness": status_data['freshness'] if status_data else None,
-            "pi_id": node_data['pi_id'] if node_data else None,
-            "sensor_id": node_data['sensor_id'] if node_data else None
+            'city': city,
+            'status': status,
+            'freshness': round(freshness, 1) if freshness is not None else None,
+            'pi_id': node_row[0],
+            'sensor_id': node_row[1]
         }
+        return jsonify(response)
+    except Exception as e:
+        logger.error(f"Error fetching status: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
         conn.close()
-        return jsonify(response), 200
-    except sqlite3.Error as e:
+
+@app.route('/nodes', methods=['GET'])
+def get_nodes():
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database error'}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT city, pi_id, sensor_id, last_seen, lat, lon
+            FROM iot_nodes
+        """)
+        rows = cursor.fetchall()
+
+        nodes = []
+        for row in rows:
+            last_seen = None
+            if row[3]:
+                try:
+                    last_seen = datetime.strptime(row[3], '%Y-%m-%dT%H:%M:%S.%f%z')
+                except ValueError as e:
+                    logger.error(f"Failed to parse last_seen timestamp '{row[3]}': {e}")
+                    continue  # Skip invalid timestamps
+            status = 'Online' if last_seen and (datetime.now(timezone.utc) - last_seen).total_seconds() < 300 else 'Offline'
+            freshness = (datetime.now(timezone.utc) - last_seen).total_seconds() if last_seen else None
+            nodes.append({
+                'city': row[0],
+                'pi_id': row[1],
+                'sensor_id': row[2],
+                'status': status,
+                'freshness': round(freshness, 1) if freshness is not None else None,
+                'lat': row[4] if row[4] is not None else CITY_COORDS.get(row[0], (0, 0))[0],
+                'lon': row[5] if row[5] is not None else CITY_COORDS.get(row[0], (0, 0))[1],
+                'logs': []
+            })
+        return jsonify(nodes)
+    except Exception as e:
+        logger.error(f"Error fetching nodes: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
         conn.close()
-        logger.error(f"Database query error: {e}")
-        return jsonify({"error": "Database query failed"}), 500
 
 if __name__ == "__main__":
-    logger.info("Starting Flask API")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000)

@@ -5,3 +5,7 @@ paho-mqtt==2.1.0
 python-dotenv==1.1.0
 requests==2.32.3
 urllib3==2.4.0
+pandas
+flask
+flask-cors
+scikit-learn
