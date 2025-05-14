@@ -91,11 +91,13 @@ function App() {
   const [forecastData, setForecastData] = useState({ api: [], model: [] });
   const [statusData, setStatusData] = useState(null);
   const [networkData, setNetworkData] = useState([]);
+  const [alerts, setAlerts] = useState([]);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("weather");
   const [showWeatherDetails, setShowWeatherDetails] = useState(false);
   const [predictionSource, setPredictionSource] = useState("api");
   const [selectedNode, setSelectedNode] = useState(null);
+  const [showInfo, setShowInfo] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -143,12 +145,33 @@ function App() {
         const nodesResponse = await axios.get("http://localhost:5000/nodes");
         console.log("Nodes API Response:", nodesResponse.data);
         setNetworkData(nodesResponse.data || []);
+
+        // Fetch alerts
+        const alertsResponse = await axios.get(
+          `http://localhost:5000/alerts?city=${selectedCity.name}`
+        );
+        console.log("Alerts API Response:", alertsResponse.data);
+        setAlerts(alertsResponse.data.slice(-5)); // Keep last 5 alerts
       } catch (error) {
         console.error("Error fetching data:", error);
         setError(`Failed to fetch data: ${error.message}`);
       }
     }
     fetchData();
+
+    // Poll alerts every 60 seconds
+    const alertInterval = setInterval(async () => {
+      try {
+        const alertsResponse = await axios.get(
+          `http://localhost:5000/alerts?city=${selectedCity.name}`
+        );
+        setAlerts(alertsResponse.data.slice(-5));
+      } catch (error) {
+        console.error("Error fetching alerts:", error);
+      }
+    }, 60000);
+
+    return () => clearInterval(alertInterval);
   }, [selectedCity]);
 
   // Determine weather condition
@@ -224,8 +247,105 @@ function App() {
     },
   };
 
+  const renderInfoTab = () => (
+    <motion.div
+      className=" p-6 bg-gray-800 bg-opacity-80 backdrop-blur-md rounded-xl shadow-lg border border-cyan-400"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 150 }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+    >
+      <h3 className="text-2xl font-orbitron-semibold text-cyan-400 mb-4">
+        Barometric Data Insights
+      </h3>
+      <motion.button
+        className="px-4 py-2 bg-cyan-500 text-gray-900 rounded-lg"
+        onClick={() => setShowInfo(true)}
+        whileHover={{
+          scale: 1.05,
+          boxShadow: "0 0 10px rgba(34, 211, 238, 0.5)",
+        }}
+      >
+        Learn About Barometric Data
+      </motion.button>
+      {showInfo && (
+        <motion.div
+          className="fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center z-50"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+        >
+          <motion.div
+            className="p-6 bg-gray-800 bg-opacity-80 backdrop-blur-md rounded-xl shadow-lg border border-cyan-400 max-w-lg w-full"
+            initial={{ scale: 0.8, y: 20 }}
+            animate={{ scale: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+          >
+            <h4 className="text-xl font-inter-semibold text-cyan-400 mb-4">
+              Barometric Data Monitoring
+            </h4>
+            <p className="text-gray-300 mb-2 font-inter">
+              <strong>
+                What can you get from continuous barometric data monitoring?
+              </strong>
+            </p>
+            <ul className="list-disc pl-5 text-gray-300 mb-4 font-inter">
+              <li>
+                <strong>Storm Prediction</strong>: Rapid pressure drops (4–6 hPa
+                in 3 hours) signal storms, enabling alerts in MoodCast.
+              </li>
+              <li>
+                <strong>Weather Trends</strong>: Pressure patterns predict clear
+                or rainy conditions, improving forecasts.
+              </li>
+              <li>
+                <strong>Climate Analysis</strong>: Long-term data reveals
+                regional climate trends across cities like Auckland.
+              </li>
+              <li>
+                <strong>Aviation and Navigation</strong>: Stable pressure
+                ensures safe flight planning for cities like Dubai.
+              </li>
+            </ul>
+            <p className="text-gray-300 mb-2 font-inter">
+              <strong>How does the human body get affected?</strong>
+            </p>
+            <ul className="list-disc pl-5 text-gray-300 mb-4 font-inter">
+              <li>
+                <strong>Joint Pain</strong>: Low pressure increases arthritis
+                pain due to tissue expansion.
+              </li>
+              <li>
+                <strong>Headaches/Migraines</strong>: Rapid pressure changes
+                trigger migraines.
+              </li>
+              <li>
+                <strong>Heat/Cold Stress</strong>: Extreme temperatures cause
+                dehydration or hypothermia.
+              </li>
+              <li>
+                <strong>Respiratory Issues</strong>: High/low humidity affects
+                asthma or allergies.
+              </li>
+              <li>
+                <strong>Mood Impact</strong>: Low pressure and clouds correlate
+                with lower mood, tracked by mood_score.
+              </li>
+            </ul>
+            <motion.button
+              className="px-4 py-2 bg-cyan-500 text-gray-900 rounded-lg"
+              onClick={() => setShowInfo(false)}
+              whileHover={{ scale: 1.05 }}
+            >
+              Close
+            </motion.button>
+          </motion.div>
+        </motion.div>
+      )}
+    </motion.div>
+  );
+
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 relative font-orbitron">
+    <div className="min-h-screen bg-gray-900 text-gray-100 relative">
       <Tooltip id="mood-score-tooltip" className="futuristic-tooltip" />
       <div className="relative z-10 container mx-auto p-6">
         <header className="mb-6 text-center">
@@ -238,6 +358,39 @@ function App() {
             MoodCast
           </motion.h1>
         </header>
+
+        <div className="mb-6">
+          {alerts.length > 0 && (
+            <motion.div
+              className="mb-4"
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5 }}
+            >
+              {alerts.map((alert, index) => (
+                <motion.div
+                  key={index}
+                  className={`p-3 mb-2 rounded-lg ${
+                    alert.severity === "critical"
+                      ? "bg-red-500 text-white"
+                      : "bg-yellow-400 text-gray-900"
+                  }`}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.3, delay: index * 0.1 }}
+                >
+                  <strong>{alert.city}</strong>: {alert.message} (
+                  {formatInTimeZone(
+                    new Date(alert.timestamp),
+                    "Pacific/Auckland",
+                    "d MMM, h:mm a"
+                  )}
+                  )
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
+        </div>
 
         <div className="mb-6 flex justify-center space-x-4">
           <motion.button
@@ -267,6 +420,20 @@ function App() {
             }}
           >
             IoT Network
+          </motion.button>
+          <motion.button
+            className={`px-4 py-2 rounded-lg ${
+              activeTab === "info"
+                ? "bg-cyan-500 text-gray-900"
+                : "bg-gray-800 text-cyan-400 border border-cyan-400"
+            }`}
+            onClick={() => setActiveTab("info")}
+            whileHover={{
+              scale: 1.05,
+              boxShadow: "0 0 10px rgba(34, 211, 238, 0.5)",
+            }}
+          >
+            Info
           </motion.button>
         </div>
 
@@ -301,7 +468,7 @@ function App() {
 
             {weatherData && (
               <motion.div
-                className="mb-6 p-6 bg-gray-800 bg-opacity-80 backdrop-blur-md rounded-xl shadow-lg border border-cyan-400"
+                className="mb-6 p-6 bg-gray-800 bg-opacity-80 backdrop-blur-md rounded-xl shadow-lg border border-cyan-400 font-inter"
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, ease: "easeOut" }}
@@ -310,7 +477,7 @@ function App() {
                   boxShadow: "0 0 15px rgba(34, 211, 238, 0.3)",
                 }}
               >
-                <h3 className="text-3xl font-semibold text-cyan-400 mb-2 flex items-center">
+                <h3 className="text-3xl font-inter-semibold text-cyan-400 mb-2 flex items-center">
                   <WeatherAnimation
                     condition={getWeatherCondition(weatherData.weather)}
                   />
@@ -330,7 +497,7 @@ function App() {
                   <p>Rain: {weatherData.weather?.rain ?? "N/A"}mm</p>
                 </div>
                 <p
-                  className="text-lg mt-4 text-purple-400"
+                  className="text-lg mt-4 text-purple-400 font-inter"
                   data-tooltip-id="mood-score-tooltip"
                   data-tooltip-content="Mood Score (0-100) estimates mood based on temperature and cloud cover. Formula: (100 - clouds) * (temp / 30). Higher scores indicate better mood conditions."
                 >
@@ -388,8 +555,8 @@ function App() {
                 <h3 className="text-xl font-semibold text-cyan-400 mb-2">
                   IoT Node Status
                 </h3>
-                <p>City: {statusData.city}</p>
-                <p>
+                <p className="font-inter">City: {statusData.city}</p>
+                <p className="font-inter">
                   Status:{" "}
                   <span
                     className={
@@ -401,9 +568,13 @@ function App() {
                     {statusData.status}
                   </span>
                 </p>
-                <p>Data Freshness: {statusData.freshness ?? "N/A"}s</p>
-                <p>Pi ID: {statusData.pi_id ?? "N/A"}</p>
-                <p>Sensor ID: {statusData.sensor_id ?? "N/A"}</p>
+                <p className="font-inter">
+                  Data Freshness: {statusData.freshness ?? "N/A"}s
+                </p>
+                <p className="font-inter">Pi ID: {statusData.pi_id ?? "N/A"}</p>
+                <p className="font-inter">
+                  Sensor ID: {statusData.sensor_id ?? "N/A"}
+                </p>
               </motion.div>
             )}
 
@@ -454,7 +625,7 @@ function App() {
                 </p>
               ) : (
                 <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6 max-h-[400px] overflow-y-auto">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6 max-h-[400px] overflow-y-auto font-inter">
                     <AnimatePresence>
                       {forecastData[predictionSource].map((forecast, index) => (
                         <motion.div
@@ -518,7 +689,7 @@ function App() {
             <h3 className="text-2xl font-semibold text-cyan-400 mb-4">
               IoT Network Map
             </h3>
-            <div className="relative h-full">
+            <div className="h-[475px]">
               <MapContainer
                 center={[0, 0]}
                 zoom={2}
@@ -628,6 +799,8 @@ function App() {
             )}
           </motion.div>
         )}
+
+        {activeTab === "info" && renderInfoTab()}
       </div>
     </div>
   );

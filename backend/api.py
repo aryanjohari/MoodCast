@@ -57,7 +57,6 @@ def get_weather():
 
     try:
         cursor = conn.cursor()
-        # Try openweathermap first, then openmeteo, with fuzzy lat/lon matching
         cursor.execute("""
             SELECT city, lat, lon, temp, humidity, pressure, wind_speed, clouds, rain, timestamp, source, mood_score
             FROM sensor_data
@@ -254,7 +253,7 @@ def get_nodes():
                     last_seen = datetime.strptime(row[3], '%Y-%m-%dT%H:%M:%S.%f%z')
                 except ValueError as e:
                     logger.error(f"Failed to parse last_seen timestamp '{row[3]}': {e}")
-                    continue  # Skip invalid timestamps
+                    continue
             status = 'Online' if last_seen and (datetime.now(timezone.utc) - last_seen).total_seconds() < 300 else 'Offline'
             freshness = (datetime.now(timezone.utc) - last_seen).total_seconds() if last_seen else None
             nodes.append({
@@ -270,6 +269,45 @@ def get_nodes():
         return jsonify(nodes)
     except Exception as e:
         logger.error(f"Error fetching nodes: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+@app.route('/alerts', methods=['GET'])
+def get_alerts():
+    city = request.args.get('city')
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database error'}), 500
+
+    try:
+        cursor = conn.cursor()
+        if city:
+            cursor.execute("""
+                SELECT city, type, message, timestamp, severity
+                FROM alerts
+                WHERE city = ? AND timestamp >= ?
+                ORDER BY timestamp DESC
+            """, (city, (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()))
+        else:
+            cursor.execute("""
+                SELECT city, type, message, timestamp, severity
+                FROM alerts
+                WHERE timestamp >= ?
+                ORDER BY timestamp DESC
+            """, ((datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(),))
+        
+        rows = cursor.fetchall()
+        alerts = [{
+            'city': row[0],
+            'type': row[1],
+            'message': row[2],
+            'timestamp': row[3],
+            'severity': row[4]
+        } for row in rows]
+        return jsonify(alerts)
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
         conn.close()
