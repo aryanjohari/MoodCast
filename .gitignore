@@ -5,6 +5,4 @@ __pycache__/
 node_modules/
 frontend/build/
 .venv
-._.DS_Store
-._.gitignore
-._.venv
+._*
